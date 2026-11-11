@@ -4,8 +4,10 @@
     python -m tradingbot run --symbols AAPL,NVDA
     python -m tradingbot analyze TSLA        # skip the Scout, run stages 2-6 on one symbol
     python -m tradingbot account             # show broker account / positions
-    python -m tradingbot loop --interval 60  # repeat `run` every N minutes
+    python -m tradingbot loop --interval 60  # repeat `run` every N minutes, during market hours only
+    python -m tradingbot market              # is the market open, and when does it next open/close
 
+run / analyze / loop only start during US market hours; add --anytime to override.
 Add --dry-run to run every stage without sending orders.
 """
 
@@ -17,12 +19,15 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 
 from .broker import AlpacaBroker, SimBroker
 from .config import Settings
 from .data import AlpacaMarketData, SyntheticMarketData
 from .journal import Journal
 from .llm import ClaudeLLM
+from .market_hours import (NY, AlpacaClock, MarketClock, NyseCalendarClock, can_start_run,
+                           seconds_until_next_window)
 from .pipeline import TradingDesk
 
 
@@ -49,6 +54,25 @@ def build_desk(settings: Settings, dry_run: bool, live_flag: bool) -> TradingDes
 
     llm = ClaudeLLM(settings.model, settings.enable_refusal_fallback, settings.research_web_search)
     return TradingDesk(settings, llm, data, broker, Journal(settings.log_dir), dry_run=dry_run)
+
+
+def build_clock(settings: Settings) -> MarketClock:
+    if settings.has_alpaca_keys:
+        return AlpacaClock(settings.alpaca_api_key, settings.alpaca_secret_key)
+    return NyseCalendarClock()
+
+
+def market_gate(settings: Settings, clock: MarketClock) -> tuple[bool, str]:
+    """(allowed, human-readable reason)."""
+    now = datetime.now(timezone.utc)
+    st = clock.status()
+    o, c = settings.market_open_buffer_min, settings.market_close_buffer_min
+    if can_start_run(st, now, c, o):
+        return True, f"market open, closes {st.next_close.astimezone(NY):%H:%M} ET"
+    wait = seconds_until_next_window(st, now, c, o)
+    resume = (now + timedelta(seconds=wait)).astimezone(NY)
+    why = "market closed" if not st.is_open else "inside the open/close buffer"
+    return False, f"{why} - next run window starts {resume:%a %Y-%m-%d %H:%M} ET ({wait / 3600:.1f}h)"
 
 
 def print_summary(outcomes) -> None:
@@ -100,6 +124,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="tradingbot", description="Six-stage AI trading desk powered by Claude")
     parser.add_argument("--dry-run", action="store_true", help="run all stages but never send orders")
     parser.add_argument("--live", action="store_true", help="required (with ALLOW_LIVE_TRADING=yes) for live mode")
+    parser.add_argument("--anytime", action="store_true", help="ignore market hours (testing only)")
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -108,6 +133,7 @@ def main(argv: list[str] | None = None) -> None:
     p_an = sub.add_parser("analyze")
     p_an.add_argument("symbol")
     sub.add_parser("account")
+    sub.add_parser("market", help="show market open/closed status")
     p_cost = sub.add_parser("estimate-cost", help="offline cost projection (no API calls)")
     p_cost.add_argument("--candidates", type=float, default=2.5, help="average candidates the Scout picks per run")
     p_cost.add_argument("--model", help="price a different model, e.g. claude-sonnet-5-5")
@@ -124,6 +150,19 @@ def main(argv: list[str] | None = None) -> None:
     if args.cmd == "estimate-cost":
         print_cost_estimate(settings, args.candidates, args.model)
         return
+    clock = build_clock(settings)
+    if args.cmd == "market":
+        st = clock.status()
+        allowed, reason = market_gate(settings, clock)
+        print(f"clock={clock.name} open={st.is_open} next_open={st.next_open.astimezone(NY):%a %Y-%m-%d %H:%M} ET "
+              f"next_close={st.next_close.astimezone(NY):%a %Y-%m-%d %H:%M} ET")
+        print(("runs allowed: " if allowed else "runs blocked: ") + reason)
+        return
+    if args.cmd in {"run", "analyze"} and not args.anytime:
+        allowed, reason = market_gate(settings, clock)
+        if not allowed:
+            print(f"Not running: {reason}. Use --anytime to override.")
+            return
     desk = build_desk(settings, args.dry_run, args.live)
     logging.info("mode=%s broker=%s data=%s model=%s dry_run=%s", settings.trading_mode, desk.broker.mode,
                  desk.data.name, settings.model, args.dry_run)
@@ -139,12 +178,18 @@ def main(argv: list[str] | None = None) -> None:
         print_usage(desk)
     elif args.cmd == "loop":
         while True:
+            allowed, reason = (True, "--anytime") if args.anytime else market_gate(settings, clock)
+            if not allowed:
+                now = datetime.now(timezone.utc)
+                wait = seconds_until_next_window(clock.status(), now, settings.market_close_buffer_min,
+                                                 settings.market_open_buffer_min)
+                logging.info("%s - sleeping", reason)
+                time.sleep(min(wait, 6 * 3600))  # re-check at least every 6h
+                continue
+            logging.info("starting run (%s)", reason)
             desk._bars.clear()
-            if isinstance(desk.broker, AlpacaBroker) and not desk.broker.is_market_open():
-                logging.info("market closed - sleeping")
-            else:
-                print_summary(desk.run().outcomes)
-                print_usage(desk)
+            print_summary(desk.run().outcomes)
+            print_usage(desk)
             time.sleep(args.interval * 60)
 
 

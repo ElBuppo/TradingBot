@@ -152,9 +152,6 @@ class AlpacaBroker:
         orders = self._client.get_orders(GetOrdersRequest(status=QueryOrderStatus.ALL, after=midnight, limit=500))
         return AccountInfo(float(acct.equity), float(acct.cash), float(acct.buying_power), positions, len(orders))
 
-    def is_market_open(self) -> bool:
-        return bool(self._client.get_clock().is_open)
-
     def buy_bracket(self, symbol: str, qty: int, price: float, stop: float, target: float) -> ExecutionResult:
         from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
         from alpaca.trading.requests import MarketOrderRequest, StopLossRequest, TakeProfitRequest

@@ -53,6 +53,9 @@ class Settings:
     max_candidates: int = 3
     max_revision_rounds: int = 2
     sim_starting_cash: float = 100_000.0
+    # Market-hours gate: no new runs in the first/last N minutes of the regular session.
+    market_open_buffer_min: int = 0
+    market_close_buffer_min: int = 15
 
     log_dir: str = "logs"
     data_dir: str = "data"
@@ -78,6 +81,8 @@ class Settings:
             max_candidates=_int("MAX_CANDIDATES", 3),
             max_revision_rounds=_int("MAX_REVISION_ROUNDS", 2),
             sim_starting_cash=_float("SIM_STARTING_CASH", 100_000.0),
+            market_open_buffer_min=_int("MARKET_OPEN_BUFFER_MIN", 0),
+            market_close_buffer_min=_int("MARKET_CLOSE_BUFFER_MIN", 15),
             log_dir=os.getenv("LOG_DIR", "logs"),
             data_dir=os.getenv("DATA_DIR", "data"),
             risk=RiskLimits(

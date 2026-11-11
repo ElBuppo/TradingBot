@@ -59,8 +59,16 @@ python -m tradingbot account                 # balances and positions
 python -m tradingbot --dry-run run           # full 6-stage run, no orders sent
 python -m tradingbot run --symbols NVDA,AMD  # scout a custom list
 python -m tradingbot analyze TSLA            # stages 2-6 on one symbol
-python -m tradingbot loop --interval 60      # repeat every 60 minutes (skips when the market is closed)
+python -m tradingbot loop --interval 60      # repeat every 60 minutes, during market hours only
+python -m tradingbot market                  # is the market open, and when is the next run window
 ```
+
+### Market hours only
+`run`, `analyze` and `loop` only start during the US regular session (09:30–16:00 New York time, weekdays, excluding NYSE holidays; 13:00 close on early-close days).
+- With Alpaca keys, the bot asks **Alpaca's market clock**, which knows every holiday and early close. Without keys, it uses a built-in NYSE calendar (2026–2027).
+- `loop` sleeps until the next open when the market is closed, so nights and weekends cost $0.
+- `MARKET_CLOSE_BUFFER_MIN` (default 15) stops new runs in the last minutes before the close, so day orders have time to fill. `MARKET_OPEN_BUFFER_MIN` (default 0) can skip the volatile first minutes.
+- `--anytime` overrides the gate for testing.
 
 | `TRADING_MODE` | Broker | Notes |
 |---|---|---|
