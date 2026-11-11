@@ -75,6 +75,10 @@ python -m tradingbot loop --interval 60      # repeat every 60 minutes (skips wh
 - Web search for Research: `RESEARCH_WEB_SEARCH=false` turns it off. Web search must also be enabled for your org in the Claude Console.
 - Cost: one symbol takes about 5 to 7 Claude calls (more if there are revision rounds), and Research with web search is the most expensive call.
 
+### Cost tracking
+- `python -m tradingbot estimate-cost` gives an offline projection with no API calls: it measures the real prompt sizes and projects per run, per day and per month for different schedules. Add `--model claude-sonnet-5-5` to price another model.
+- Real runs (`run`, `analyze`, `loop`) print a per-stage token and cost table from the API's actual `usage` data and log the total to the journal.
+
 ## Tests
 
 ```bash

@@ -50,6 +50,7 @@ class TradingDesk:
     def __init__(self, settings: Settings, llm: LLM, data: MarketData, broker: Broker, journal: Journal,
                  dry_run: bool = False) -> None:
         self.s = settings
+        self.llm = llm
         self.data = data
         self.broker = broker
         self.journal = journal

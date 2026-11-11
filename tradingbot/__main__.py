@@ -59,6 +59,43 @@ def print_summary(outcomes) -> None:
         print(f"{o.symbol:<6} {o.status:<17} rounds={o.rounds}  {o.detail[:200]}")
 
 
+def print_usage(desk: TradingDesk) -> None:
+    usage = getattr(desk.llm, "usage", None)
+    if usage and usage.stages:
+        print("\n=== Claude usage (this process) ===")
+        print(usage.report())
+        desk.journal.write("usage", None, {"total_cost_usd": round(usage.total_cost, 4)})
+
+
+def print_cost_estimate(settings: Settings, candidates: float, model: str | None) -> None:
+    from .costs import SCENARIOS, estimate, schedule_table
+
+    model = model or settings.model
+    est = estimate(settings, candidates, model)
+    toks = est.pop("_prompt_tokens")
+    print(f"Model: {model}   watchlist: {len(settings.watchlist)} symbols   "
+          f"avg candidates/run: {candidates}   max revision rounds: {settings.max_revision_rounds}")
+    print("\nMeasured prompt sizes (input tokens, excl. web search results):")
+    for st, v in toks.items():
+        print(f"  {st:<13} {v}")
+    print("\nCost per candidate by debate outcome (low / mid / high assumptions):")
+    for name, prob, _ in SCENARIOS:
+        vals = " / ".join(f"${est[c].per_scenario[name]:.2f}" for c in ("low", "mid", "high"))
+        print(f"  {name:<30} p={prob:.2f}   {vals}")
+    print("\n" + "                      low      mid     high")
+    print(f"  Scout call      {est['low'].scout_cost:>8.3f} {est['mid'].scout_cost:>8.3f} {est['high'].scout_cost:>8.3f}")
+    print(f"  Per candidate   {est['low'].per_candidate:>8.3f} {est['mid'].per_candidate:>8.3f} "
+          f"{est['high'].per_candidate:>8.3f}")
+    print(f"  Per full run    {est['low'].per_run:>8.3f} {est['mid'].per_run:>8.3f} {est['high'].per_run:>8.3f}")
+    print(f"\n{'Schedule':<34}{'runs/day':>9}{'$/day (mid)':>13}{'$/month low':>13}{'mid':>10}{'high':>10}")
+    for (label, rpd, day, month), lo, hi in zip(schedule_table(est["mid"].per_run),
+                                                 schedule_table(est["low"].per_run),
+                                                 schedule_table(est["high"].per_run)):
+        print(f"{label:<34}{rpd:>9.1f}{day:>13,.0f}{lo[3]:>13,.0f}{month:>10,.0f}{hi[3]:>10,.0f}")
+    print("\nInput sizes are measured from the real prompts; output/thinking tokens and web-search\n"
+          "result sizes are assumptions. Run `--dry-run run` with a real key for measured costs.")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="tradingbot", description="Six-stage AI trading desk powered by Claude")
     parser.add_argument("--dry-run", action="store_true", help="run all stages but never send orders")
@@ -71,6 +108,9 @@ def main(argv: list[str] | None = None) -> None:
     p_an = sub.add_parser("analyze")
     p_an.add_argument("symbol")
     sub.add_parser("account")
+    p_cost = sub.add_parser("estimate-cost", help="offline cost projection (no API calls)")
+    p_cost.add_argument("--candidates", type=float, default=2.5, help="average candidates the Scout picks per run")
+    p_cost.add_argument("--model", help="price a different model, e.g. claude-sonnet-5-5")
     p_loop = sub.add_parser("loop")
     p_loop.add_argument("--interval", type=int, default=60, help="minutes between runs")
 
@@ -81,6 +121,9 @@ def main(argv: list[str] | None = None) -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     settings = Settings.from_env()
+    if args.cmd == "estimate-cost":
+        print_cost_estimate(settings, args.candidates, args.model)
+        return
     desk = build_desk(settings, args.dry_run, args.live)
     logging.info("mode=%s broker=%s data=%s model=%s dry_run=%s", settings.trading_mode, desk.broker.mode,
                  desk.data.name, settings.model, args.dry_run)
@@ -89,9 +132,11 @@ def main(argv: list[str] | None = None) -> None:
         print(json.dumps(desk.broker.account().to_prompt_dict(), indent=2))
     elif args.cmd == "analyze":
         print_summary([desk.analyze(args.symbol)])
+        print_usage(desk)
     elif args.cmd == "run":
         symbols = [s.strip().upper() for s in args.symbols.split(",")] if args.symbols else None
         print_summary(desk.run(symbols).outcomes)
+        print_usage(desk)
     elif args.cmd == "loop":
         while True:
             desk._bars.clear()
@@ -99,6 +144,7 @@ def main(argv: list[str] | None = None) -> None:
                 logging.info("market closed - sleeping")
             else:
                 print_summary(desk.run().outcomes)
+                print_usage(desk)
             time.sleep(args.interval * 60)
 
 

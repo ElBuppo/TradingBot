@@ -16,6 +16,8 @@ from typing import Protocol, TypeVar
 import anthropic
 from pydantic import BaseModel
 
+from .costs import UsageTracker
+
 log = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
@@ -45,6 +47,7 @@ class ClaudeLLM:
         self.model = model
         self.enable_fallback = enable_fallback
         self.web_search = web_search
+        self.usage = UsageTracker(model)
 
     def _fallback_kwargs(self) -> dict:
         if not self.enable_fallback:
@@ -61,6 +64,7 @@ class ClaudeLLM:
             output_format=schema,
             **self._fallback_kwargs(),
         )
+        self.usage.record(stage, response.usage)
         self._check_stop(stage, response)
         parsed = response.parsed_output
         if parsed is None:
@@ -88,6 +92,7 @@ class ClaudeLLM:
             if tools:
                 kwargs["tools"] = tools
             response = self.client.beta.messages.create(**kwargs)
+            self.usage.record(stage, response.usage)
             self._check_stop(stage, response)
 
             for block in response.content:
